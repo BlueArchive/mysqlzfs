@@ -18,7 +18,7 @@ from collections import OrderedDict
 from datetime import datetime, timedelta
 from glob import glob
 from optparse import OptionParser
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, check_call
 
 # INSTALL
 # We need pip as there is a bug on older requests module version
@@ -54,35 +54,35 @@ class MysqlZfs(object):
         parser.add_option('-f', '--all-volumes', dest='all_volumes', action="store_true",
             help=('Wether to snapshot all EBS volumes '
                   'instead of specifying volume-ids'), default=False)
-        parser.add_option('-F', '--all-volumes-noboot', dest='all_volumes_noboot', 
+        parser.add_option('-F', '--all-volumes-noboot', dest='all_volumes_noboot',
             help=('Wether to snapshot all EBS volumes (except boot volume)'
                   'instead of specifying volume-ids'), default=False, action="store_true")
         parser.add_option('-n', '--retention-days', dest='retention_days', type='int',
             help='How many days worth of snapshot to keep (age of snapshots)', default=7)
-        parser.add_option('-d', '--debug', dest='debug', action="store_true", 
+        parser.add_option('-d', '--debug', dest='debug', action="store_true",
             help='Enable debugging outputs', default=False)
-        parser.add_option('-c', '--defaults-file', dest='dotmycnf', type='string', 
+        parser.add_option('-c', '--defaults-file', dest='dotmycnf', type='string',
             help='Path to .my.cnf containing connection credentials to MySQL',
             default='/root/.my.cnf')
-        parser.add_option('-L', '--log', dest='log', type='string', 
+        parser.add_option('-L', '--log', dest='log', type='string',
             help='Log output to specified file',
             default=None)
-        parser.add_option('-r', '--skip-repl-check', dest='skipreplcheck', action="store_true", 
+        parser.add_option('-r', '--skip-repl-check', dest='skipreplcheck', action="store_true",
             help='Wether to skip replication check when taking the snapshot',
             default=False)
-        parser.add_option('-x', '--run', dest='run', action="store_true", 
+        parser.add_option('-x', '--run', dest='run', action="store_true",
             help=('Execute the given subcommand i.e. passing snapshot alone does not do '
                   'anything without --run.'),
             default=False)
-        parser.add_option('-X', '--dry-run', dest='dryrun', action="store_true", 
+        parser.add_option('-X', '--dry-run', dest='dryrun', action="store_true",
             help=('Show what the script will be doing instead of actually doing it'),
             default=False)
-        parser.add_option('-z', '--skip-fsfreeze', dest='skip_fsfreeze', action="store_true", 
+        parser.add_option('-z', '--skip-fsfreeze', dest='skip_fsfreeze', action="store_true",
             help='Wether to skip calling fsfreeze before snapshotting',
             default=False)
 
         (opts, args) = parser.parse_args()
-        
+
         cmds = [MYSQLEBS_CMD_SNAP, MYSQLEBS_CMD_VOLS, MYSQLEBS_CMD_PURGE]
         if len(args) == 1 and args[0] not in cmds:
             parser.error("Command not recognized, got '%s'. See more with --help" % args[0])
@@ -104,7 +104,7 @@ class MysqlZfs(object):
         elif opts.volume_ids is None and opts.cmd == MYSQLEBS_CMD_SNAP and opts.run:
             parser.error(('List of volume-ids is required (--volume-ids). '
                           'Use the command "identify-volumes" to try and list local volume-ids'))
-        
+
         opts.ppid = os.getpid()
         opts.pcwd = os.path.dirname(os.path.realpath(__file__))
 
@@ -163,7 +163,7 @@ class MysqlZfs(object):
             return None, err
 
         root_list = out.split('\n')
-        
+
         for s in root_list:
             if s == '':
                 continue
@@ -232,11 +232,11 @@ class MysqlZfs(object):
 
     @staticmethod
     def read_lock_file(lockfile):
-        """ Check if lock file exists and returns the pidno of the binlog 
+        """ Check if lock file exists and returns the pidno of the binlog
         process. If binlog process is dead, delete lock file and return None
         """
         pid = None
-        
+
         if not os.path.isfile(lockfile):
             return False, pid
 
@@ -263,7 +263,7 @@ class MysqlZfs(object):
         """ Check for /proc/PID/status
         - If it exists, if not process is dead, return True
         - If exists and process state is Z, return False
-        - 
+        -
         TODO: Check also that that process is not in zombie?
         """
         if pidno is None:
@@ -289,7 +289,7 @@ class MysqlZfs(object):
 
             params = { 'read_default_file': dotmycnf,
                        'read_default_group': section }
-                       
+
             conn = MySQLdb.connect(cnf.get(section, 'host'), **params)
             # MySQLdb for some reason has autoccommit off by default
             conn.autocommit(True)
@@ -328,7 +328,7 @@ class MysqlEbsSnapshotManager(object):
         if self.opts.volume_ids is not None:
             self.opts.volume_ids.strip().split(',')
 
-        # We keep track of any frozen mounts to make sure we unfreeze them in 
+        # We keep track of any frozen mounts to make sure we unfreeze them in
         # in case of exceptions
         self.frozen_mounts = dict()
         self.volumes = self.ec2_list_ebs_volumes(self.instance_id)
@@ -379,7 +379,7 @@ class MysqlEbsSnapshotManager(object):
         desc = '%s mysqlebs Snapshot' % ts_today.strftime('%Y-%m-%d_%H_%M_%S')
 
         tags = [{
-            'ResourceType': 'snapshot', 
+            'ResourceType': 'snapshot',
             'Tags': [
                 {'Key': 'mysqlebs-desc', 'Value': desc},
                 {'Key': 'mysqlebs-ts', 'Value': str(ts_epoch)},
@@ -394,7 +394,7 @@ class MysqlEbsSnapshotManager(object):
             instance_spec['ExcludeBootVolume'] = False
 
         if self.opts.volume_ids is None:
-            resp = self.ec2.create_snapshots(Description=desc, 
+            resp = self.ec2.create_snapshots(Description=desc,
                                              InstanceSpecification=instance_spec,
                                              TagSpecifications=tags,
                                              DryRun=False,
@@ -403,7 +403,7 @@ class MysqlEbsSnapshotManager(object):
             return True
 
         for volume_id in self.volume_ids:
-            resp = self.ec2.create_snapshot(Description=desc, 
+            resp = self.ec2.create_snapshot(Description=desc,
                                             VolumeId=volume_id,
                                             TagSpecifications=tags,
                                             DryRun=False)
@@ -412,7 +412,7 @@ class MysqlEbsSnapshotManager(object):
         return True
 
     def ec2_list_ebs_snapshots(self):
-        """ List available EBS snapshots. 
+        """ List available EBS snapshots.
         """
 
     def ec2_mark_expired_snapshots(self):
@@ -451,7 +451,7 @@ class MysqlEbsSnapshotManager(object):
                     self.logger.info('Adding device tag %s to snapshot %s' % (
                         vol['Attachments'][0]['Device'], snapshot['SnapshotId']))
                     self.ec2.create_tags(
-                        Resources=[snapshot['SnapshotId']], 
+                        Resources=[snapshot['SnapshotId']],
                         Tags=[{'Key':'mysqlebs-dev','Value':vol['Attachments'][0]['Device']}])
 
         if not self.opts.dryrun and len(expired_snapshots) > 0:
@@ -565,7 +565,7 @@ class MysqlEbsSnapshotManager(object):
 
                 while True:
                     row = cur.fetchone()
-                    if row is None: 
+                    if row is None:
                         raise Exception('MySQL server is not running as replica')
 
                     break
@@ -581,6 +581,9 @@ class MysqlEbsSnapshotManager(object):
             self.logger.info('Flushing tables (with read lock)')
             if not self.opts.dryrun:
                 cur.execute('FLUSH TABLES WITH READ LOCK')
+
+            if not self.opts.dryrun:
+                check_call(['sync'])
 
             if len(mounts) > 0 and not self.opts.skip_fsfreeze:
                 self.logger.info('Freezing the following mountpoints %s' % '|'.join(mounts))
@@ -626,9 +629,9 @@ class MysqlEbsSnapshotManager(object):
         """ Listing end to end snapshot summary from AWS via
         SDK is expensive. There is no way to query newest and oldest snapshots
         per volume-id without querying everything, especially if we are snapshotting
-        multiple volumes. 
+        multiple volumes.
 
-        For now, we leave it to the user to identify snapshots they want to use 
+        For now, we leave it to the user to identify snapshots they want to use
         i.e. for restore. We only tag them appropriately for proper identification.
         """
         return True
@@ -654,7 +657,7 @@ class MysqlEbsSnapshotManager(object):
     def purge_expired_snapshots(self):
         self.logger.info('Checking for expired snapshots (mysqlebs-expired:true)')
         snapshots = self.ec2_list_expired_snapshots()
-        
+
         if len(snapshots) > 0:
             for snapshot in snapshots:
                 for tag in snapshot['Tags']:
@@ -710,5 +713,5 @@ if __name__ == "__main__":
                 logger.error(str(e))
         else:
             traceback.print_exc()
-        
+
         sys.exit(1)

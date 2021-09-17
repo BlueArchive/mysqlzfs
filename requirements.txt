@@ -5,6 +5,3 @@ requests>=2.23.0
 mysqlclient>=1.4.6
 botocore
 mysql-connector-python>=8.0.19
-pytest>=5.4.1
-pytest-cov>=2.8.1
-codecov>=2.0.22
