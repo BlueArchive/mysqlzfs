@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from glob import glob
 from optparse import OptionParser
 from subprocess import Popen, PIPE, check_call
+from prometheus_client import CollectorRegistry, Gauge, push_to_gateway, pushadd_to_gateway
 
 # INSTALL
 # We need pip as there is a bug on older requests module version
@@ -326,7 +327,9 @@ class MysqlEbsSnapshotManager(object):
 
         self.volume_ids = None
         if self.opts.volume_ids is not None:
-            self.opts.volume_ids.strip().split(',')
+            self.logger.debug('volume_ids is not None...')
+            self.logger.debug(self.opts.volume_ids)
+            self.volume_ids = self.opts.volume_ids.strip().split(',')
 
         # We keep track of any frozen mounts to make sure we unfreeze them in
         # in case of exceptions
@@ -393,23 +396,47 @@ class MysqlEbsSnapshotManager(object):
         elif self.opts.all_volumes:
             instance_spec['ExcludeBootVolume'] = False
 
+        responses = []    
+
         if self.opts.volume_ids is None:
             resp = self.ec2.create_snapshots(Description=desc,
                                              InstanceSpecification=instance_spec,
                                              TagSpecifications=tags,
                                              DryRun=False,
                                              CopyTagsFromSource='volume')
+            self.logger.debug('not for loop checking resp')                                 
             self.logger.debug(resp)
-            return True
+            self.logger.debug(resp.get("Snapshots")[0].get("VolumeId"))
+            #responses.append(resp.get("Snapshots"))
+            registry = CollectorRegistry()
+            g = Gauge('snapshot_request_created_info', 'Time snapshot request was created in ec2', labelnames=['volume'], registry=registry)
+            g.labels(volume=resp.get("Snapshots")[0].get("VolumeId")).set_to_current_time()
+            g.set_to_current_time()
+            push_to_gateway('monitor-1a:9099', job='mysql-snapshot', registry=registry)
+            #push_to_gateway('monitor-1a:9099', job='TEST', registry=registry)  
+            return resp.get("Snapshots")
+
+        self.logger.debug('checking volume_ids')
+        self.logger.debug(self.volume_ids)
 
         for volume_id in self.volume_ids:
             resp = self.ec2.create_snapshot(Description=desc,
                                             VolumeId=volume_id,
                                             TagSpecifications=tags,
                                             DryRun=False)
+            self.logger.debug('volume_id for loop checking resp')    
+            self.logger.debug(volume_id)                            
             self.logger.debug(resp)
+            registry = CollectorRegistry()
+            g = Gauge('snapshot_request_created_info', 'Time snapshot request was created in ec2', labelnames=['volume'], registry=registry)
+            g.labels(volume=volume_id).set_to_current_time()
+            #g.labels('volume').set(3)
+            #g.set_to_current_time()
+            self.logger.debug(g)
+            pushadd_to_gateway('monitor-1a:9099', job='mysql-snapshot', registry=registry) 
+            responses.append(resp)
 
-        return True
+        return responses
 
     def ec2_list_ebs_snapshots(self):
         """ List available EBS snapshots.
@@ -543,6 +570,72 @@ class MysqlEbsSnapshotManager(object):
 
         return True
 
+    def monitor_snapshot(self, responses):
+        #Do stuff here
+
+        self.logger.info('Passing responses to monitor_snapshot func')
+        self.logger.debug(responses)
+        self.logger.debug('Checking length of responses array')
+        self.logger.debug(len(responses))
+
+        if self.opts.dryrun:
+            return True
+
+        snapshotIDs = []
+
+        for resp in responses:
+            self.logger.debug('Checking on SnapshotIDs...')
+            self.logger.debug(resp.get("SnapshotId"))
+            snapshotIDs.append(resp.get("SnapshotId"))
+
+        snapshots = self.ec2.describe_snapshots(SnapshotIds=snapshotIDs)
+        self.logger.debug('Checking snapshot describe...')
+        self.logger.debug(snapshots)
+
+        if len(snapshots) != len(responses):
+            #Trigger a warning, perhaps critical
+            self.logger.debug('Attempted snapshot length does not match returned snapshot describe query length')
+        
+        if len(snapshots) != 0:
+            snapshotsDetails = snapshots.get("Snapshots")
+        else:
+            self.logger.debug('All snapshots on this run failed to return details upon request')
+
+        for snapshot in snapshotsDetails:
+            state = 'pending'
+            while state != 'error' and state != 'completed':
+                self.logger.debug('in while loop for snapshot details...')
+                snapshotID = []
+                snapshotID.append(snapshot.get("SnapshotId"))
+                self.logger.debug('logging snapshot ID %s' % type(snapshotID))
+                self.logger.debug(snapshotID)
+                state = self.ec2.describe_snapshots(SnapshotIds=snapshotID).get("Snapshots")[0].get("State")
+                self.logger.debug('logging snapshot state...')
+                self.logger.debug(state)
+                if state == 'completed':
+                    self.logger.debug('snapshot has finished!')
+                    self.logger.debug(snapshot.get("VolumeId"))
+                    registry = CollectorRegistry()
+                    #g = Gauge('snapshot_completed', 'Time snapshot request was completed in ec2', labelnames='volume', registry=registry, _labelvalues=snapshot.get("VolumeId"))
+                    g = Gauge('snapshot_completed_info', 'Time snapshot request was completed in ec2', labelnames=['volume'], registry=registry)
+                    g.labels(volume=snapshot.get("VolumeId")).set_to_current_time()
+                    #g.set_to_current_time()
+                    #g.labels('volume').set(100)
+                    pushadd_to_gateway('monitor-1a:9099', job='mysql-snapshot', registry=registry)
+                    #push_to_gateway('monitor-1a:9099', job='TEST', registry=registry)  
+                elif state == 'error':
+                    self.logger.debug('snapshot has encountered an error!')
+                else:
+                    self.logger.debug('snapshot is still running...')    
+                time.sleep(5)
+
+
+        return True
+        registry = CollectorRegistry()
+        g = Gauge('job_last_success_unixtime', 'Last time a batch job successfully finished', registry=registry)
+        g.set_to_current_time()
+        push_to_gateway('localhost:9091', job='batchA', registry=registry)    
+
     def create_snapshot(self):
         conn = None
         frozen_boot = False
@@ -591,11 +684,13 @@ class MysqlEbsSnapshotManager(object):
 
             self.logger.debug('Taking snapshot')
 
-            self.ec2_create_snapshot()
+            responses = self.ec2_create_snapshot()
 
             if len(self.frozen_mounts) > 0 and not self.opts.skip_fsfreeze:
                 self.logger.info('Un-freezing the following mountpoints %s' % '|'.join(mounts))
                 self.os_fs_unfreeze(self.frozen_mounts)
+
+            self.monitor_snapshot(responses)   
 
         except MySQLdb.Error, e:
             self.logger.error('A MySQL error has occurred, aborting new snapshot')
