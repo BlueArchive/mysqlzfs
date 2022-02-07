@@ -109,7 +109,7 @@ class MysqlZfs(object):
             parser.error(('List of volume-ids is required (--volume-ids). '
                           'Use the command "identify-volumes" to try and list local volume-ids'))
 
-        if opts.gateway_address is None:
+        if opts.cmd == MYSQLEBS_CMD_SNAP and opts.gateway_address is None:
             parser.error('Gateway address is required for pushing metrics to Prometheus. (--gateway-address or -g).')
 
         opts.ppid = os.getpid()
