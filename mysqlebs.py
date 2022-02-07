@@ -349,7 +349,7 @@ class MysqlEbsSnapshotManager(object):
 
         if state and state == 'completed':
             #push_add
-            g = Gauge('snapshot_completed_info', 'Time snapshot request was completed in ec2', registry=registry)
+            g = Gauge('gdb_snapshot_completed_info', 'Time snapshot request was completed in ec2', registry=registry)
             #if labels are specified g.labels(volume=volumeId).set_to_current_time()
             g.set_to_current_time()
             pushadd_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
@@ -358,7 +358,7 @@ class MysqlEbsSnapshotManager(object):
             self.logger.debug('Snapshot encountered an error!')
         else:
             #regular push
-            g = Gauge('snapshot_request_created_info', 'Time snapshot request was created in ec2', registry=registry)
+            g = Gauge('gdb_snapshot_request_created_info', 'Time snapshot request was created in ec2', registry=registry)
             g.set_to_current_time()
             push_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId}) 
 
