@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from glob import glob
 from optparse import OptionParser
 from subprocess import Popen, PIPE, check_call
+from prometheus_client import CollectorRegistry, Gauge, push_to_gateway, pushadd_to_gateway
 
 # INSTALL
 # We need pip as there is a bug on older requests module version
@@ -80,6 +81,9 @@ class MysqlZfs(object):
         parser.add_option('-z', '--skip-fsfreeze', dest='skip_fsfreeze', action="store_true",
             help='Wether to skip calling fsfreeze before snapshotting',
             default=False)
+        parser.add_option('-g', '--gateway-address', dest='gateway_address', type="string",
+            help='Specify the push gateway address to push snapshot metrics to.  ex: monitor-1a:9099',
+            default=None)
 
         (opts, args) = parser.parse_args()
 
@@ -104,6 +108,9 @@ class MysqlZfs(object):
         elif opts.volume_ids is None and opts.cmd == MYSQLEBS_CMD_SNAP and opts.run:
             parser.error(('List of volume-ids is required (--volume-ids). '
                           'Use the command "identify-volumes" to try and list local volume-ids'))
+
+        if opts.cmd == MYSQLEBS_CMD_SNAP and opts.gateway_address is None:
+            parser.error('Gateway address is required for pushing metrics to Prometheus. (--gateway-address or -g).')
 
         opts.ppid = os.getpid()
         opts.pcwd = os.path.dirname(os.path.realpath(__file__))
@@ -326,12 +333,32 @@ class MysqlEbsSnapshotManager(object):
 
         self.volume_ids = None
         if self.opts.volume_ids is not None:
-            self.opts.volume_ids.strip().split(',')
+            self.logger.debug('volume_ids is not None...')
+            self.logger.debug(self.opts.volume_ids)
+            self.volume_ids = self.opts.volume_ids.strip().split(',')
 
         # We keep track of any frozen mounts to make sure we unfreeze them in
         # in case of exceptions
         self.frozen_mounts = dict()
         self.volumes = self.ec2_list_ebs_volumes(self.instance_id)
+
+    def push_to_prometheus(self, gatewayAddress, volumeId, state=False):
+        """ Push metrics to prometheus via push gateway.
+        """
+        registry = CollectorRegistry()
+
+        if state:
+            #push_add
+            g = Gauge('gdb_snapshot_completed_info', 'Time snapshot request was completed in ec2', ['status'], registry=registry)
+            #if labels are specified g.labels(volume=volumeId).set_to_current_time()
+            g.labels(status=state).set_to_current_time()
+            #g.set_to_current_time()
+            pushadd_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
+        else:
+            #regular push
+            g = Gauge('gdb_snapshot_request_created_info', 'Time snapshot request was created in ec2', registry=registry)
+            g.set_to_current_time()
+            push_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId}) 
 
     def ec2_instance_id(self):
         metadata_url = 'http://169.254.169.254/latest/meta-data/instance-id'
@@ -393,23 +420,36 @@ class MysqlEbsSnapshotManager(object):
         elif self.opts.all_volumes:
             instance_spec['ExcludeBootVolume'] = False
 
+        responses = []    
+
         if self.opts.volume_ids is None:
             resp = self.ec2.create_snapshots(Description=desc,
                                              InstanceSpecification=instance_spec,
                                              TagSpecifications=tags,
                                              DryRun=False,
                                              CopyTagsFromSource='volume')
+            self.logger.debug('volume_ids is None.  Snapshot request response below:')                                 
             self.logger.debug(resp)
-            return True
+            self.push_to_prometheus(self.opts.gateway_address, resp.get("Snapshots")[0].get("VolumeId")) 
+            return resp.get("Snapshots")
+
+        self.logger.debug('checking volume_ids')
+        self.logger.debug(self.volume_ids)
 
         for volume_id in self.volume_ids:
             resp = self.ec2.create_snapshot(Description=desc,
                                             VolumeId=volume_id,
                                             TagSpecifications=tags,
                                             DryRun=False)
+            self.logger.debug('volume_id for snapshot request below:')    
+            self.logger.debug(volume_id)
+            self.logger.debug('Snapshot request response below:')                      
             self.logger.debug(resp)
+            self.push_to_prometheus(self.opts.gateway_address, volume_id)
+            responses.append(resp)
+            time.sleep(3)
 
-        return True
+        return responses
 
     def ec2_list_ebs_snapshots(self):
         """ List available EBS snapshots.
@@ -543,6 +583,66 @@ class MysqlEbsSnapshotManager(object):
 
         return True
 
+    def monitor_snapshot(self, responses):
+        """ Monitor snapshot requests to ec2.
+        """
+
+        if self.opts.dryrun:
+            return True
+
+        snapshotIDs = []
+
+        for resp in responses:
+            snapshotIDs.append(resp.get("SnapshotId"))
+
+        if snapshotIDs is None or None in snapshotIDs:
+            #Trigger a warning, perhaps critical...
+            self.logger.error('SnapshotIDs is None or includes None...')
+            return False
+
+        snapshots = self.ec2.describe_snapshots(SnapshotIds=snapshotIDs).get("Snapshots")
+
+        if len(snapshots) != len(responses):
+            #Trigger a warning, perhaps critical
+            self.logger.error('Attempted snapshot length does not match returned snapshot describe query length')
+            return False  
+
+        for snapshot in snapshots:
+            state = 'pending'
+            i = 0
+            timeout = time.time() + 60*15 # 15 minute timeout on snapshot monitoring
+            while state != 'error' and state != 'completed':
+                snapshotID = []
+                snapshotID.append(snapshot.get("SnapshotId"))
+                snapshotDetails = self.ec2.describe_snapshots(SnapshotIds=snapshotID)
+                if snapshotDetails.get("Snapshots") and i < 3:
+                    i = 0
+                    state = snapshotDetails.get("Snapshots")[0].get("State")
+                elif snapshotDetails.get("Snapshots") is None and i >= 3:
+                    self.logger.debug('Unable to get snapshot details from AWS API after three attempts.')
+                    state = 'error'
+                else:
+                    self.logger.debug('Unable to get snapshot details from AWS API... Trying up to three times.')
+
+                if state == 'completed':
+                    self.logger.debug('snapshot has finished!')
+                    self.push_to_prometheus(self.opts.gateway_address, snapshot.get("VolumeId"), state) 
+                elif state == 'error':
+                    self.logger.debug('snapshot has encountered an error!')
+                    self.push_to_prometheus(self.opts.gateway_address, snapshot.get("VolumeId"), state) 
+                else:
+                    self.logger.debug('snapshot is still running... querying every 5s')    
+
+                if time.time() > timeout:
+                    self.logger.warn('Snapshot monitoring timed out after 15 minutes...')
+                    self.push_to_prometheus(self.opts.gateway_address, snapshot.get("VolumeId"), 'timeout') 
+                    break
+
+                time.sleep(5)
+                i += 1
+
+        return True  
+
     def create_snapshot(self):
         conn = None
         frozen_boot = False
@@ -591,11 +691,13 @@ class MysqlEbsSnapshotManager(object):
 
             self.logger.debug('Taking snapshot')
 
-            self.ec2_create_snapshot()
+            responses = self.ec2_create_snapshot()
 
             if len(self.frozen_mounts) > 0 and not self.opts.skip_fsfreeze:
                 self.logger.info('Un-freezing the following mountpoints %s' % '|'.join(mounts))
                 self.os_fs_unfreeze(self.frozen_mounts)
+
+            self.monitor_snapshot(responses)   
 
         except MySQLdb.Error, e:
             self.logger.error('A MySQL error has occurred, aborting new snapshot')
