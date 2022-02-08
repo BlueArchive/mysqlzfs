@@ -347,18 +347,16 @@ class MysqlEbsSnapshotManager(object):
         """
         registry = CollectorRegistry()
 
-        if state and state == 'completed':
+        if state:
             #push_add
-            g = Gauge('gdb_snapshot_completed_info', 'Time snapshot request was completed in ec2', registry=registry)
+            g = Gauge('snapshot_completed_info', 'Time snapshot request was completed in ec2', ['status'], registry=registry)
             #if labels are specified g.labels(volume=volumeId).set_to_current_time()
-            g.set_to_current_time()
+            g.labels(status=state).set_to_current_time()
+            #g.set_to_current_time()
             pushadd_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
-        elif state and state == 'error':
-            #problems..
-            self.logger.debug('Snapshot encountered an error!')
         else:
             #regular push
-            g = Gauge('gdb_snapshot_request_created_info', 'Time snapshot request was created in ec2', registry=registry)
+            g = Gauge('snapshot_request_created_info', 'Time snapshot request was created in ec2', registry=registry)
             g.set_to_current_time()
             push_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId}) 
 
@@ -597,32 +595,51 @@ class MysqlEbsSnapshotManager(object):
         for resp in responses:
             snapshotIDs.append(resp.get("SnapshotId"))
 
-        snapshots = self.ec2.describe_snapshots(SnapshotIds=snapshotIDs)
+        if snapshotIDs is None or None in snapshotIDs:
+            #Trigger a warning, perhaps critical...
+            self.logger.error('SnapshotIDs is None or includes None...')
+            return False
+
+        snapshots = self.ec2.describe_snapshots(SnapshotIds=snapshotIDs).get("Snapshots")
 
         if len(snapshots) != len(responses):
             #Trigger a warning, perhaps critical
-            self.logger.debug('Attempted snapshot length does not match returned snapshot describe query length')
-        
-        if len(snapshots) != 0:
-            snapshotsDetails = snapshots.get("Snapshots")
-        else:
-            self.logger.debug('All snapshots on this run failed to return details upon request')
+            self.logger.error('Attempted snapshot length does not match returned snapshot describe query length')
+            return False  
 
-        for snapshot in snapshotsDetails:
+        for snapshot in snapshots:
             state = 'pending'
+            i = 0
+            timeout = time.time() + 60*15 # 15 minute timeout on snapshot monitoring
             while state != 'error' and state != 'completed':
                 snapshotID = []
                 snapshotID.append(snapshot.get("SnapshotId"))
-                state = self.ec2.describe_snapshots(SnapshotIds=snapshotID).get("Snapshots")[0].get("State")
+                snapshotDetails = self.ec2.describe_snapshots(SnapshotIds=snapshotID)
+                if snapshotDetails.get("Snapshots") and i < 3:
+                    i = 0
+                    state = snapshotDetails.get("Snapshots")[0].get("State")
+                elif snapshotDetails.get("Snapshots") is None and i >= 3:
+                    self.logger.debug('Unable to get snapshot details from AWS API after three attempts.')
+                    state = 'error'
+                else:
+                    self.logger.debug('Unable to get snapshot details from AWS API... Trying up to three times.')
+
                 if state == 'completed':
                     self.logger.debug('snapshot has finished!')
                     self.push_to_prometheus(self.opts.gateway_address, snapshot.get("VolumeId"), state) 
                 elif state == 'error':
                     self.logger.debug('snapshot has encountered an error!')
+                    self.push_to_prometheus(self.opts.gateway_address, snapshot.get("VolumeId"), state) 
                 else:
                     self.logger.debug('snapshot is still running... querying every 5s')    
-                time.sleep(5)
 
+                if time.time() > timeout:
+                    self.logger.warn('Snapshot monitoring timed out after 15 minutes...')
+                    self.push_to_prometheus(self.opts.gateway_address, snapshot.get("VolumeId"), 'timeout') 
+                    break
+
+                time.sleep(5)
+                i += 1
 
         return True  
 
