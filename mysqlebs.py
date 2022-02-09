@@ -84,6 +84,9 @@ class MysqlZfs(object):
         parser.add_option('-g', '--gateway-address', dest='gateway_address', type="string",
             help='Specify the push gateway address to push snapshot metrics to.  ex: monitor-1a:9099',
             default=None)
+        parser.add_option('-e', '--environment', dest='environment', type="string",
+            help='Specify the environment in which these EBS snapshots are being taken.',
+            default=None)    
 
         (opts, args) = parser.parse_args()
 
@@ -109,8 +112,11 @@ class MysqlZfs(object):
             parser.error(('List of volume-ids is required (--volume-ids). '
                           'Use the command "identify-volumes" to try and list local volume-ids'))
 
-        if opts.cmd == MYSQLEBS_CMD_SNAP and opts.gateway_address is None:
-            parser.error('Gateway address is required for pushing metrics to Prometheus. (--gateway-address or -g).')
+        if opts.cmd == MYSQLEBS_CMD_SNAP:
+            if opts.gateway_address is None:
+                parser.error('Gateway address is required for pushing metrics to Prometheus. (--gateway-address or -g)')
+            if opts.environment is None:
+                parser.error('Environment is required for pushing metrics to Prometheus. (--environment or -e)')
 
         opts.ppid = os.getpid()
         opts.pcwd = os.path.dirname(os.path.realpath(__file__))
@@ -342,22 +348,22 @@ class MysqlEbsSnapshotManager(object):
         self.frozen_mounts = dict()
         self.volumes = self.ec2_list_ebs_volumes(self.instance_id)
 
-    def push_to_prometheus(self, gatewayAddress, volumeId, state=False):
+    def push_to_prometheus(self, environment, gatewayAddress, volumeId, state=False):
         """ Push metrics to prometheus via push gateway.
         """
         registry = CollectorRegistry()
 
         if state:
             #push_add
-            g = Gauge('gdb_snapshot_completed_info', 'Time snapshot request was completed in ec2', ['status'], registry=registry)
+            g = Gauge('gdb_snapshot_completed_info', 'Time snapshot request was completed in ec2', ['status','environment'], registry=registry)
             #if labels are specified g.labels(volume=volumeId).set_to_current_time()
-            g.labels(status=state).set_to_current_time()
+            g.labels(status=state,environment=environment).set_to_current_time()
             #g.set_to_current_time()
             pushadd_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
         else:
             #regular push
-            g = Gauge('gdb_snapshot_request_created_info', 'Time snapshot request was created in ec2', registry=registry)
-            g.set_to_current_time()
+            g = Gauge('gdb_snapshot_request_created_info', 'Time snapshot request was created in ec2', ['environment'], registry=registry)
+            g.labels(environment=environment).set_to_current_time()
             push_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId}) 
 
     def ec2_instance_id(self):
@@ -430,7 +436,7 @@ class MysqlEbsSnapshotManager(object):
                                              CopyTagsFromSource='volume')
             self.logger.debug('volume_ids is None.  Snapshot request response below:')                                 
             self.logger.debug(resp)
-            self.push_to_prometheus(self.opts.gateway_address, resp.get("Snapshots")[0].get("VolumeId")) 
+            self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, resp.get("Snapshots")[0].get("VolumeId")) 
             return resp.get("Snapshots")
 
         self.logger.debug('checking volume_ids')
@@ -445,7 +451,7 @@ class MysqlEbsSnapshotManager(object):
             self.logger.debug(volume_id)
             self.logger.debug('Snapshot request response below:')                      
             self.logger.debug(resp)
-            self.push_to_prometheus(self.opts.gateway_address, volume_id)
+            self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, volume_id)
             responses.append(resp)
             time.sleep(3)
 
@@ -626,16 +632,16 @@ class MysqlEbsSnapshotManager(object):
 
                 if state == 'completed':
                     self.logger.debug('snapshot has finished!')
-                    self.push_to_prometheus(self.opts.gateway_address, snapshot.get("VolumeId"), state) 
+                    self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, snapshot.get("VolumeId"), state) 
                 elif state == 'error':
                     self.logger.debug('snapshot has encountered an error!')
-                    self.push_to_prometheus(self.opts.gateway_address, snapshot.get("VolumeId"), state) 
+                    self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, snapshot.get("VolumeId"), state) 
                 else:
                     self.logger.debug('snapshot is still running... querying every 5s')    
 
                 if time.time() > timeout:
                     self.logger.warn('Snapshot monitoring timed out after 15 minutes...')
-                    self.push_to_prometheus(self.opts.gateway_address, snapshot.get("VolumeId"), 'timeout') 
+                    self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, snapshot.get("VolumeId"), 'timeout') 
                     break
 
                 time.sleep(5)
