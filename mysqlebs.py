@@ -363,6 +363,7 @@ class MysqlEbsSnapshotManager(object):
                 pushadd_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
             except Exception as e:
                 self.logger.error(str(e))
+                raise Exception(e)
         else:
             #regular push
             g = Gauge('gdb_snapshot_request_created_info', 'Time snapshot request was created in ec2', ['environment'], registry=registry)
@@ -371,6 +372,7 @@ class MysqlEbsSnapshotManager(object):
                 push_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
             except Exception as e:
                 self.logger.error(str(e))
+                raise Exception(e)
 
     def ec2_instance_id(self):
         metadata_url = 'http://169.254.169.254/latest/meta-data/instance-id'
