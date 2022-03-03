@@ -359,12 +359,20 @@ class MysqlEbsSnapshotManager(object):
             #if labels are specified g.labels(volume=volumeId).set_to_current_time()
             g.labels(status=state,environment=environment).set_to_current_time()
             #g.set_to_current_time()
-            pushadd_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
+            try:
+                pushadd_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
+            except Exception as e:
+                self.logger.debug('Unable to pushadd to prometheus push gateway...')
+                self.logger.error(str(e))
         else:
             #regular push
             g = Gauge('gdb_snapshot_request_created_info', 'Time snapshot request was created in ec2', ['environment'], registry=registry)
             g.labels(environment=environment).set_to_current_time()
-            push_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId}) 
+            try:
+                push_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
+            except Exception as e:
+                self.logger.debug('Unable to push to prometheus push gateway...')
+                self.logger.error(str(e))
 
     def ec2_instance_id(self):
         metadata_url = 'http://169.254.169.254/latest/meta-data/instance-id'
