@@ -86,7 +86,7 @@ class MysqlZfs(object):
             default=None)
         parser.add_option('-e', '--environment', dest='environment', type="string",
             help='Specify the environment in which these EBS snapshots are being taken.',
-            default=None)    
+            default=None)
 
         (opts, args) = parser.parse_args()
 
@@ -434,7 +434,7 @@ class MysqlEbsSnapshotManager(object):
         elif self.opts.all_volumes:
             instance_spec['ExcludeBootVolume'] = False
 
-        responses = []    
+        responses = []
 
         if self.opts.volume_ids is None:
             resp = self.ec2.create_snapshots(Description=desc,
@@ -442,9 +442,9 @@ class MysqlEbsSnapshotManager(object):
                                              TagSpecifications=tags,
                                              DryRun=False,
                                              CopyTagsFromSource='volume')
-            self.logger.debug('volume_ids is None.  Snapshot request response below:')                                 
+            self.logger.debug('volume_ids is None.  Snapshot request response below:')
             self.logger.debug(resp)
-            self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, resp.get("Snapshots")[0].get("VolumeId")) 
+            self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, resp.get("Snapshots")[0].get("VolumeId"))
             return resp.get("Snapshots")
 
         self.logger.debug('checking volume_ids')
@@ -455,9 +455,9 @@ class MysqlEbsSnapshotManager(object):
                                             VolumeId=volume_id,
                                             TagSpecifications=tags,
                                             DryRun=False)
-            self.logger.debug('volume_id for snapshot request below:')    
+            self.logger.debug('volume_id for snapshot request below:')
             self.logger.debug(volume_id)
-            self.logger.debug('Snapshot request response below:')                      
+            self.logger.debug('Snapshot request response below:')
             self.logger.debug(resp)
             self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, volume_id)
             responses.append(resp)
@@ -485,7 +485,10 @@ class MysqlEbsSnapshotManager(object):
             filters = [{'Name':'tag-key','Values':['mysqlebs-ts']},
                        {'Name':'volume-id','Values':[vol['VolumeId']]}]
 
-            snapshots = self.ec2.describe_snapshots(Filters=filters, MaxResults=1000)
+            #TODO: paginate results using MaxResults and NextToken
+            snapshots = self.ec2.describe_snapshots(Filters=filters)
+            self.logger.debug('Retrieved %d snapshots for %s' % (len(snapshots['Snapshots']), vol['VolumeId']))
+            self.logger.debug('NextToken: %s' % snapshots['NextToken'])
             for snapshot in snapshots['Snapshots']:
                 for tag in snapshot['Tags']:
                     if tag['Key'] == 'mysqlebs-dev':
@@ -496,6 +499,8 @@ class MysqlEbsSnapshotManager(object):
 
                     snap_exp_epoch = int(tag['Value'])
                     snap_exp_ts = datetime.utcfromtimestamp(snap_exp_epoch).strftime('%Y-%m-%d %H:%M:%S')
+
+                    self.logger.debug('snapID: %s; exp_epoch: %d; exp_ts: %s' % (snapshot['SnapshotId'], snap_exp_epoch, snap_exp_ts))
 
                     if snap_exp_epoch < ts_epoch:
                         self.logger.info('SnapshotID %s expired on %s' % (snapshot['SnapshotId'], snap_exp_ts))
@@ -513,7 +518,8 @@ class MysqlEbsSnapshotManager(object):
 
     def ec2_list_expired_snapshots(self):
         filters = [{'Name':'tag:mysqlebs-expired','Values':['true']}]
-        snapshots = self.ec2.describe_snapshots(Filters=filters,MaxResults=1000)
+        #TODO: paginate results using MaxResults and NextToken
+        snapshots = self.ec2.describe_snapshots(Filters=filters)
         return snapshots['Snapshots']
 
     def ec2_delete_snapshot(self, snapshotid):
@@ -619,7 +625,7 @@ class MysqlEbsSnapshotManager(object):
         if len(snapshots) != len(responses):
             #Trigger a warning, perhaps critical
             self.logger.error('Attempted snapshot length does not match returned snapshot describe query length')
-            return False  
+            return False
 
         for snapshot in snapshots:
             state = 'pending'
@@ -640,22 +646,22 @@ class MysqlEbsSnapshotManager(object):
 
                 if state == 'completed':
                     self.logger.debug('snapshot has finished!')
-                    self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, snapshot.get("VolumeId"), state) 
+                    self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, snapshot.get("VolumeId"), state)
                 elif state == 'error':
                     self.logger.debug('snapshot has encountered an error!')
-                    self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, snapshot.get("VolumeId"), state) 
+                    self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, snapshot.get("VolumeId"), state)
                 else:
-                    self.logger.debug('snapshot is still running... querying every 5s')    
+                    self.logger.debug('snapshot is still running... querying every 5s')
 
                 if time.time() > timeout:
                     self.logger.warn('Snapshot monitoring timed out after 15 minutes...')
-                    self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, snapshot.get("VolumeId"), 'timeout') 
+                    self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, snapshot.get("VolumeId"), 'timeout')
                     break
 
                 time.sleep(5)
                 i += 1
 
-        return True  
+        return True
 
     def create_snapshot(self):
         conn = None
@@ -711,7 +717,7 @@ class MysqlEbsSnapshotManager(object):
                 self.logger.info('Un-freezing the following mountpoints %s' % '|'.join(mounts))
                 self.os_fs_unfreeze(self.frozen_mounts)
 
-            self.monitor_snapshot(responses)   
+            self.monitor_snapshot(responses)
 
         except MySQLdb.Error, e:
             self.logger.error('A MySQL error has occurred, aborting new snapshot')
