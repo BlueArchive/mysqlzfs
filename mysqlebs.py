@@ -488,7 +488,6 @@ class MysqlEbsSnapshotManager(object):
             #TODO: paginate results using MaxResults and NextToken
             snapshots = self.ec2.describe_snapshots(Filters=filters)
             self.logger.debug('Retrieved %d snapshots for %s' % (len(snapshots['Snapshots']), vol['VolumeId']))
-            self.logger.debug('NextToken: %s' % snapshots['NextToken'])
             for snapshot in snapshots['Snapshots']:
                 for tag in snapshot['Tags']:
                     if tag['Key'] == 'mysqlebs-dev':
