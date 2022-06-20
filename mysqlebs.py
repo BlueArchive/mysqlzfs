@@ -716,8 +716,6 @@ class MysqlEbsSnapshotManager(object):
                 self.logger.info('Un-freezing the following mountpoints %s' % '|'.join(mounts))
                 self.os_fs_unfreeze(self.frozen_mounts)
 
-            self.monitor_snapshot(responses)
-
         except MySQLdb.Error, e:
             self.logger.error('A MySQL error has occurred, aborting new snapshot')
             self.logger.error(str(e))
@@ -741,6 +739,12 @@ class MysqlEbsSnapshotManager(object):
 
             if len(self.frozen_mounts) > 0 and not self.opts.skip_fsfreeze:
                 self.os_fs_unfreeze(self.frozen_mounts)
+
+        if (responses):
+            self.logger.info('Monitoring snapshots...')
+            self.monitor_snapshot(responses)
+        else:
+            self.logger.warn('Unable to monitor snapshot responses, if this persists Prometheus alerts will fire...')
 
         self.logger.info('Snapshot complete')
         self.logger.info('Scanning for expired snapshots')
