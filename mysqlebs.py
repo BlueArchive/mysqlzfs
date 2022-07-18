@@ -693,9 +693,9 @@ class MysqlEbsSnapshotManager(object):
                     raise Exception('Replication thread(s) are not running')
 
             if not self.opts.skipreplcheck:
-                self.logger.debug('Stopping SQL thread')
+                self.logger.debug('Stopping Replication')
                 if not self.opts.dryrun:
-                    cur.execute('STOP SLAVE SQL_THREAD')
+                    cur.execute('STOP SLAVE')
 
             self.logger.info('Flushing tables (with read lock)')
             if not self.opts.dryrun:
