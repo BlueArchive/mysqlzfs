@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import boto3
 import logging
@@ -12,7 +12,7 @@ import sys
 import signal
 import time
 import traceback
-from ConfigParser import ConfigParser, NoOptionError
+from configparser import ConfigParser, NoOptionError
 from botocore.exceptions import ClientError as BotoClientError
 from collections import OrderedDict
 from datetime import datetime, timedelta
@@ -260,7 +260,7 @@ class MysqlZfs(object):
                     if pid <= 0:
                         continue
                     break
-                except ValueError, err:
+                except ValueError as err:
                     return False, pid
                 finally:
                     lockfd.close()
@@ -307,7 +307,7 @@ class MysqlZfs(object):
             # MySQLdb for some reason has autoccommit off by default
             conn.autocommit(True)
             return conn
-        except MySQLdb.Error, e:
+        except MySQLdb.Error as e:
             raise Exception('Could not establish connection to MySQL server')
 
     @staticmethod
@@ -379,7 +379,7 @@ class MysqlEbsSnapshotManager(object):
         try:
             resp = requests.get(metadata_url, timeout=2)
             return resp.text.strip()
-        except requests.exceptions.RequestException, err:
+        except requests.exceptions.RequestException as err:
             self.logger.error(str(err))
             raise Exception('Unable to determine instance-id')
 
@@ -716,7 +716,7 @@ class MysqlEbsSnapshotManager(object):
                 self.logger.info('Un-freezing the following mountpoints %s' % '|'.join(mounts))
                 self.os_fs_unfreeze(self.frozen_mounts)
 
-        except MySQLdb.Error, e:
+        except MySQLdb.Error as e:
             self.logger.error('A MySQL error has occurred, aborting new snapshot')
             self.logger.error(str(e))
             return False
@@ -828,7 +828,7 @@ if __name__ == "__main__":
 
         logger.info('Done')
 
-    except Exception, e:
+    except Exception as e:
         if logger is not None:
             if opts is None or (opts is not None and opts.debug):
                 tb = traceback.format_exc().splitlines()
