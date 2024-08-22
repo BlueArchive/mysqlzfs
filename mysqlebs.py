@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import boto3
 import logging
@@ -12,7 +12,7 @@ import sys
 import signal
 import time
 import traceback
-from ConfigParser import ConfigParser, NoOptionError
+from configparser import ConfigParser, NoOptionError
 from botocore.exceptions import ClientError as BotoClientError
 from collections import OrderedDict
 from datetime import datetime, timedelta
@@ -84,11 +84,16 @@ class MysqlZfs(object):
         parser.add_option('-g', '--gateway-address', dest='gateway_address', type="string",
             help='Specify the push gateway address to push snapshot metrics to.  ex: monitor-1a:9099',
             default=None)
+        parser.add_option('--skip-prometheus', dest='skip_prometheus', action='store_true',
+            help='Skip Prometheus reporting', default=False)
         parser.add_option('-e', '--environment', dest='environment', type="string",
             help='Specify the environment in which these EBS snapshots are being taken.',
             default=None)
 
         (opts, args) = parser.parse_args()
+        if opts.skip_prometheus:
+            print('Skipping Prometheus reporting as per the --skip-prometheus flag.')
+            opts.pushgateway = None
 
         cmds = [MYSQLEBS_CMD_SNAP, MYSQLEBS_CMD_VOLS, MYSQLEBS_CMD_PURGE]
         if len(args) == 1 and args[0] not in cmds:
@@ -113,10 +118,11 @@ class MysqlZfs(object):
                           'Use the command "identify-volumes" to try and list local volume-ids'))
 
         if opts.cmd == MYSQLEBS_CMD_SNAP:
-            if opts.gateway_address is None:
-                parser.error('Gateway address is required for pushing metrics to Prometheus. (--gateway-address or -g)')
-            if opts.environment is None:
-                parser.error('Environment is required for pushing metrics to Prometheus. (--environment or -e)')
+            if not opts.skip_prometheus:  # Skip the checks if the skip-prometheus flag is set
+                if opts.gateway_address is None:
+                    parser.error('Gateway address is required for pushing metrics to Prometheus. (--gateway-address or -g)')
+                if opts.environment is None:
+                    parser.error('Environment is required for pushing metrics to Prometheus. (--environment or -e)')
 
         opts.ppid = os.getpid()
         opts.pcwd = os.path.dirname(os.path.realpath(__file__))
@@ -172,10 +178,11 @@ class MysqlZfs(object):
         p = Popen(cmd_pstree, stdout=PIPE, stderr=PIPE)
         out, err = p.communicate()
         p = None
-        if err is not '':
+        if err:
             return None, err
 
-        root_list = out.split('\n')
+        out_txt = out.decode(sys.getfilesystemencoding()) if hasattr(out, 'decode') else out
+        root_list = out_txt.split('\n')
 
         for s in root_list:
             if s == '':
@@ -260,7 +267,7 @@ class MysqlZfs(object):
                     if pid <= 0:
                         continue
                     break
-                except ValueError, err:
+                except ValueError as err:
                     return False, pid
                 finally:
                     lockfd.close()
@@ -291,25 +298,29 @@ class MysqlZfs(object):
     def mysql_connect(dotmycnf, section='client'):
 
         try:
-            cnf = MysqlZfs.read_config_file(dotmycnf)
-            if cnf is None:
-                raise Exception('Could not read provided %s' % dotmycnf)
-            elif not cnf.has_option(section, 'host'):
-                section = 'client'
+           cnf:ConfigParser = MysqlZfs.read_config_file(dotmycnf)
+           if cnf is None:
+               raise Exception('Could not read provided %s' % dotmycnf)
+        
+           # Ensure 'host' or 'unix_socket' is in the section before proceeding
+           if not cnf.has_option(section, 'host') and not cnf.has_option(section, 'unix_socket'):
+               raise Exception('.my.cnf %s group requires either host or unix_socket option ; mycnffile: %s, cnf: %s' % (section, dotmycnf, repr(cnf) ))
 
-            if not cnf.has_option(section, 'host'):
-                raise Exception('.my.cnf %s group requires host option' % section)
+           # Prepare connection parameters
+           params = {'read_default_file': dotmycnf,
+                  'read_default_group': section}
 
-            params = { 'read_default_file': dotmycnf,
-                       'read_default_group': section }
+           # Use the unix_socket if available, otherwise fallback to host
+           if cnf.has_option(section, 'unix_socket'):
+               conn = MySQLdb.connect(unix_socket=cnf.get(section, 'unix_socket'), **params)
+           else:
+               conn = MySQLdb.connect(cnf.get(section, 'host'), **params)
 
-            conn = MySQLdb.connect(cnf.get(section, 'host'), **params)
-            # MySQLdb for some reason has autoccommit off by default
-            conn.autocommit(True)
-            return conn
-        except MySQLdb.Error, e:
-            raise Exception('Could not establish connection to MySQL server')
+           return conn
 
+        except Exception as e:
+            logging.error("Error in mysql_connect: %s", str(e))
+            raise
     @staticmethod
     def which(file):
         for path in os.environ["PATH"].split(os.pathsep):
@@ -349,27 +360,30 @@ class MysqlEbsSnapshotManager(object):
         self.volumes = self.ec2_list_ebs_volumes(self.instance_id)
 
     def push_to_prometheus(self, environment, gatewayAddress, volumeId, state=False):
-        """ Push metrics to prometheus via push gateway.
-        """
+        """ Push metrics to prometheus via push gateway. """
+
+        # Check if Prometheus reporting should be skipped
+        if self.opts.skip_prometheus:
+            self.logger.info('Skipping Prometheus reporting as per the --skip-prometheus flag.')
+            return  # Exit the function early if skip-prometheus is set
+
         registry = CollectorRegistry()
 
         if state:
-            #push_add
-            g = Gauge('gdb_snapshot_completed_info', 'Time snapshot request was completed in ec2', ['status','environment'], registry=registry)
-            #if labels are specified g.labels(volume=volumeId).set_to_current_time()
-            g.labels(status=state,environment=environment).set_to_current_time()
-            #g.set_to_current_time()
+            # push_add
+            g = Gauge('gdb_snapshot_completed_info', 'Time snapshot request was completed in ec2', ['status', 'environment'], registry=registry)
+            g.labels(status=state, environment=environment).set_to_current_time()
             try:
                 pushadd_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
             except Exception as e:
                 self.logger.debug('Unable to pushadd to prometheus push gateway...')
                 self.logger.error(str(e))
         else:
-            #regular push
+            # regular push
             g = Gauge('gdb_snapshot_request_created_info', 'Time snapshot request was created in ec2', ['environment'], registry=registry)
             g.labels(environment=environment).set_to_current_time()
             try:
-                push_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
+               push_to_gateway(gatewayAddress, job='mysql-snapshot', registry=registry, grouping_key={"volume": volumeId})
             except Exception as e:
                 self.logger.debug('Unable to push to prometheus push gateway...')
                 self.logger.error(str(e))
@@ -379,7 +393,7 @@ class MysqlEbsSnapshotManager(object):
         try:
             resp = requests.get(metadata_url, timeout=2)
             return resp.text.strip()
-        except requests.exceptions.RequestException, err:
+        except requests.exceptions.RequestException as err:
             self.logger.error(str(err))
             raise Exception('Unable to determine instance-id')
 
@@ -557,11 +571,13 @@ class MysqlEbsSnapshotManager(object):
             self.logger.debug(cmd)
             p = Popen(cmd, stdout=PIPE, stderr=PIPE)
             out, err = p.communicate()
-            if err is not '':
+            if err:
                 raise Exception(err)
 
-            out_raw = out.split('\n')
-            mount = out_raw[0].decode('utf-8').strip()
+            out_txt = out.decode(sys.getfilesystemencoding()) if hasattr(out, 'decode') else out
+            out_raw = out_txt.split('\n')
+            #mount = out_raw[0].decode('utf-8').strip()
+            mount = out_raw[0].strip()
             if mount not in mounts:
                 mounts[mount] = mount
 
@@ -575,10 +591,10 @@ class MysqlEbsSnapshotManager(object):
 
         for mountpoint in mountpoints:
             cmd = ['/sbin/fsfreeze', '--freeze', mountpoint]
-            self.logger.debug(cmd)
+            self.logger.warning(cmd)
             p = Popen(cmd, stdout=PIPE, stderr=PIPE)
             out, err = p.communicate()
-            if err is not '':
+            if err:
                 raise Exception(err)
 
             self.frozen_mounts[mountpoint] = mountpoint
@@ -594,7 +610,7 @@ class MysqlEbsSnapshotManager(object):
             self.logger.debug(cmd)
             p = Popen(cmd, stdout=PIPE, stderr=PIPE)
             out, err = p.communicate()
-            if err is not '':
+            if err:
                 raise Exception(err)
 
             if mountpoint in self.frozen_mounts:
@@ -653,7 +669,7 @@ class MysqlEbsSnapshotManager(object):
                     self.logger.debug('snapshot is still running... querying every 5s')
 
                 if time.time() > timeout:
-                    self.logger.warn('Snapshot monitoring timed out after 15 minutes...')
+                    self.logger.warning('Snapshot monitoring timed out after 15 minutes...')
                     self.push_to_prometheus(self.opts.environment, self.opts.gateway_address, snapshot.get("VolumeId"), 'timeout')
                     break
 
@@ -674,9 +690,14 @@ class MysqlEbsSnapshotManager(object):
             cur = conn.cursor(MySQLdb.cursors.DictCursor)
 
             mounts = self.os_mountpoint_from_devs()
+            print('Physical Drives:', self.os_physical_drives())
+            print('Mounts:', mounts)
+            if not mounts:
+                raise ValueError('No valid mount points found')
+            mounts = {k: v for k, v in mounts.items() if k and k != '/boot/efi'}
             if not self.opts.skip_fsfreeze:
                 if '/' in mounts:
-                    self.logger.warn('Root volume (/) found on list of mounts, skipping')
+                    self.logger.warning('Root volume (/) found on list of mounts, skipping')
                     del mounts['/']
 
             if not self.opts.skipreplcheck:
@@ -716,7 +737,7 @@ class MysqlEbsSnapshotManager(object):
                 self.logger.info('Un-freezing the following mountpoints %s' % '|'.join(mounts))
                 self.os_fs_unfreeze(self.frozen_mounts)
 
-        except MySQLdb.Error, e:
+        except MySQLdb.Error as e:
             self.logger.error('A MySQL error has occurred, aborting new snapshot')
             self.logger.error(str(e))
             return False
@@ -744,7 +765,7 @@ class MysqlEbsSnapshotManager(object):
             self.logger.info('Monitoring snapshots...')
             self.monitor_snapshot(responses)
         else:
-            self.logger.warn('Unable to monitor snapshot responses, if this persists Prometheus alerts will fire...')
+            self.logger.warning('Unable to monitor snapshot responses, if this persists Prometheus alerts will fire...')
 
         self.logger.info('Snapshot complete')
         self.logger.info('Scanning for expired snapshots')
@@ -828,7 +849,7 @@ if __name__ == "__main__":
 
         logger.info('Done')
 
-    except Exception, e:
+    except Exception as e:
         if logger is not None:
             if opts is None or (opts is not None and opts.debug):
                 tb = traceback.format_exc().splitlines()
@@ -840,3 +861,5 @@ if __name__ == "__main__":
             traceback.print_exc()
 
         sys.exit(1)
+
+
