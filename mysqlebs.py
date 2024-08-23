@@ -92,7 +92,6 @@ class MysqlZfs(object):
 
         (opts, args) = parser.parse_args()
         if opts.skip_prometheus:
-            print('Skipping Prometheus reporting as per the --skip-prometheus flag.')
             opts.pushgateway = None
 
         cmds = [MYSQLEBS_CMD_SNAP, MYSQLEBS_CMD_VOLS, MYSQLEBS_CMD_PURGE]
@@ -833,6 +832,10 @@ if __name__ == "__main__":
 
         opts = MysqlZfs.buildopts()
         logger = MysqlZfs.create_logger(opts)
+
+        if opts.skip_prometheus:
+            logger.info('Skipping Prometheus reporting as per the --skip-prometheus flag.')
+
         ebsmgr = MysqlEbsSnapshotManager(logger, opts)
 
         if opts.cmd == MYSQLEBS_CMD_SNAP:
