@@ -583,7 +583,7 @@ class MysqlEbsSnapshotManager(object):
 
         self.frozen_mounts = dict()
 
-        for mountpoint in mountpoints:
+        for mountpoint in list(mountpoints.keys()):
             cmd = ['/sbin/fsfreeze', '--freeze', mountpoint]
             self.logger.warning(cmd)
             p = Popen(cmd, stdout=PIPE, stderr=PIPE)
