@@ -599,7 +599,8 @@ class MysqlEbsSnapshotManager(object):
         if self.opts.dryrun:
             return True
 
-        for mountpoint in mountpoints:
+        # Iterate over a copy of the keys to avoid modifying the dictionary during iteration
+        for mountpoint in list(mountpoints.keys()):
             cmd = ['/sbin/fsfreeze', '--unfreeze', mountpoint]
             self.logger.debug(cmd)
             p = Popen(cmd, stdout=PIPE, stderr=PIPE)
@@ -607,6 +608,7 @@ class MysqlEbsSnapshotManager(object):
             if err:
                 raise Exception(err)
 
+            # Safely remove the mountpoint from frozen_mounts
             if mountpoint in self.frozen_mounts:
                 del self.frozen_mounts[mountpoint]
 
