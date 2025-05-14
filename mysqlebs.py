@@ -21,13 +21,6 @@ from optparse import OptionParser
 from subprocess import Popen, PIPE, check_call
 from prometheus_client import CollectorRegistry, Gauge, push_to_gateway, pushadd_to_gateway
 
-# INSTALL
-# We need pip as there is a bug on older requests module version
-#   sudo apt install libmysqlclient-dev
-#   pip install awscli requests boto3 mysql psutil -U
-# Make sure [mysqlebs] section exists on /root/.my.cnf (or specify --dotmycnf)
-# Make sure aws configure is ran (~/.aws/[config|credentials] exists)
-
 MYSQLEBS_VERSION = 0.3
 MYSQLEBS_CMD_SNAP = 'snapshot'
 MYSQLEBS_CMD_VOLS = 'identify-volumes'
@@ -388,13 +381,15 @@ class MysqlEbsSnapshotManager(object):
                 self.logger.error(str(e))
 
     def ec2_instance_id(self):
-        metadata_url = 'http://169.254.169.254/latest/meta-data/instance-id'
-        try:
-            resp = requests.get(metadata_url, timeout=2)
-            return resp.text.strip()
-        except requests.exceptions.RequestException as err:
-            self.logger.error(str(err))
-            raise Exception('Unable to determine instance-id')
+        vars_file = os.path.join(os.path.dirname(__file__), 'vars.txt')
+        if not os.path.isfile(vars_file):
+            raise Exception('vars.txt file not found in the script directory')
+
+        with open(vars_file, 'r') as file:
+            for line in file:
+                if line.startswith('INSTANCE_ID='):
+                    return line.split('=', 1)[1].strip()
+        raise Exception('INSTANCE_ID not found in vars.txt file')
 
     def ec2_list_ebs_volumes(self, instance_id):
         """ Try to list the attached EBS volumes on this instance.
