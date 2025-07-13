@@ -361,7 +361,27 @@ class MysqlEbsSnapshotManager(object):
 
         try:
             current_time = time.time()
+            
+            # Read existing gdb_snapshot_enabled_info value
+            enabled_value = 2 # Default value if not found
+            with open(metric_file, 'r') as f:
+                for line in f:
+                    if line.startswith('gdb_snapshot_enabled_info'):
+                        parts = line.strip().split()
+                        if len(parts) >= 2:
+                            try:
+                                enabled_value = int(parts[1])
+                            except ValueError:
+                                enabled_value = 2  # Default to 2 if conversion fails
+                        break
+            
             with open(metric_file, 'w') as f:
+                # Always write the enabled metric with the previously read value
+                f.write('# HELP gdb_snapshot_enabled_info Indicates if snapshotting is enabled on this instance\n')
+                f.write('# TYPE gdb_snapshot_enabled_info gauge\n')
+                f.write(f'gdb_snapshot_enabled_info {enabled_value}\n')
+                
+                # Rest of the metrics
                 f.write('# HELP gdb_snapshot_request_created_info Time snapshot request was created in ec2\n')
                 f.write('# TYPE gdb_snapshot_request_created_info gauge\n')
                 f.write('# HELP gdb_snapshot_completed_info Time snapshot request was completed in ec2\n')
