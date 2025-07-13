@@ -385,16 +385,23 @@ class MysqlEbsSnapshotManager(object):
                 f.write('# HELP gdb_snapshot_completed_info Time snapshot request was completed in ec2\n')
                 f.write('# TYPE gdb_snapshot_completed_info gauge\n')
                 
-                if state:
-                    # Create completed metric
-                    metric_name = 'gdb_snapshot_completed_info'
-                    labels = f'status="{state}",environment="{environment}",volume="{volumeId}",snapshot="{snapShotId}",command="{command}"'
-                    f.write(f'{metric_name}{{{labels}}} {current_time}\n')
-                else:
-                    # Create request metric
-                    metric_name = 'gdb_snapshot_request_created_info'
-                    labels = f'environment="{environment}",volume="{volumeId}",command="{command}"'
-                    f.write(f'{metric_name}{{{labels}}} {current_time}\n')
+                if command == MYSQLEBS_CMD_SNAP:
+                    if state:
+                        # Create completed metric
+                        metric_name = 'gdb_snapshot_completed_info'
+                        labels = f'status="{state}",environment="{environment}",volume="{volumeId}",snapshot="{snapShotId}",command="{command}"'
+                        f.write(f'{metric_name}{{{labels}}} {current_time}\n')
+                    else:
+                        # Create request metric
+                        metric_name = 'gdb_snapshot_request_created_info'
+                        labels = f'environment="{environment}",volume="{volumeId}",command="{command}"'
+                        f.write(f'{metric_name}{{{labels}}} {current_time}\n')
+
+                # Purge metrics
+                f.write('# HELP gdb_snapshot_purge_info Time snapshot request was completed in ec2\n')
+                f.write('# TYPE gdb_snapshot_purge_info gauge\n')
+                if command == MYSQLEBS_CMD_PURGE:
+                    f.write(f'gdb_snapshot_purge_info{{environment="{environment}",command="{command}"}} {current_time}\n')
 
         except Exception as e:
             self.logger.debug('Unable to write to prometheus textfile collector...')
