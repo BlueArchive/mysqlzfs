@@ -80,8 +80,6 @@ class MysqlZfs(object):
             default=None)
 
         (opts, args) = parser.parse_args()
-        if opts.skip_prometheus:
-            opts.pushgateway = None
 
         cmds = [MYSQLEBS_CMD_SNAP, MYSQLEBS_CMD_VOLS, MYSQLEBS_CMD_PURGE]
         if len(args) == 1 and args[0] not in cmds:
@@ -348,7 +346,7 @@ class MysqlEbsSnapshotManager(object):
         self.frozen_mounts = dict()
         self.volumes = self.ec2_list_ebs_volumes(self.instance_id)
 
-    def push_to_prometheus(self, environment, volumeId, snapShotId="", state=False):
+    def push_to_prometheus(self, environment, volumeId, snapShotId="", state=False, command=""):
         """ Write metrics to a textfile collector. """
 
         # Write to textfile collector
@@ -390,12 +388,12 @@ class MysqlEbsSnapshotManager(object):
                 if state:
                     # Create completed metric
                     metric_name = 'gdb_snapshot_completed_info'
-                    labels = f'status="{state}",environment="{environment}",volume="{volumeId}",snapshot="{snapShotId}"'
+                    labels = f'status="{state}",environment="{environment}",volume="{volumeId}",snapshot="{snapShotId}",command="{command}"'
                     f.write(f'{metric_name}{{{labels}}} {current_time}\n')
                 else:
                     # Create request metric
                     metric_name = 'gdb_snapshot_request_created_info'
-                    labels = f'environment="{environment}",volume="{volumeId}"'
+                    labels = f'environment="{environment}",volume="{volumeId}",command="{command}"'
                     f.write(f'{metric_name}{{{labels}}} {current_time}\n')
 
         except Exception as e:
@@ -474,7 +472,7 @@ class MysqlEbsSnapshotManager(object):
                                              CopyTagsFromSource='volume')
             self.logger.debug('volume_ids is None.  Snapshot request response below:')
             self.logger.debug(resp)
-            self.push_to_prometheus(self.opts.environment, resp.get("Snapshots")[0].get("VolumeId"))
+            self.push_to_prometheus(self.opts.environment, resp.get("Snapshots")[0].get("VolumeId"), "", False, command=MYSQLEBS_CMD_SNAP)
             return resp.get("Snapshots")
 
         self.logger.debug('checking volume_ids')
@@ -489,7 +487,7 @@ class MysqlEbsSnapshotManager(object):
             self.logger.debug(volume_id)
             self.logger.debug('Snapshot request response below:')
             self.logger.debug(resp)
-            self.push_to_prometheus(self.opts.environment, volume_id)
+            self.push_to_prometheus(self.opts.environment, volume_id, "", False, command=MYSQLEBS_CMD_SNAP)
             responses.append(resp)
             time.sleep(3)
 
@@ -679,16 +677,16 @@ class MysqlEbsSnapshotManager(object):
 
                 if state == 'completed':
                     self.logger.debug('snapshot has finished!')
-                    self.push_to_prometheus(self.opts.environment, snapshot.get("VolumeId"), snapshot.get("SnapshotId"), state)
+                    self.push_to_prometheus(self.opts.environment, snapshot.get("VolumeId"), snapshot.get("SnapshotId"), state, command=MYSQLEBS_CMD_SNAP)
                 elif state == 'error':
                     self.logger.debug('snapshot has encountered an error!')
-                    self.push_to_prometheus(self.opts.environment, snapshot.get("VolumeId"), "", state)
+                    self.push_to_prometheus(self.opts.environment, snapshot.get("VolumeId"), "", state, command=MYSQLEBS_CMD_SNAP)
                 else:
                     self.logger.debug('snapshot is still running... querying every 5s')
 
                 if time.time() > timeout:
                     self.logger.warning('Snapshot monitoring timed out after 15 minutes...')
-                    self.push_to_prometheus(self.opts.environment, snapshot.get("VolumeId"), "", 'timeout')
+                    self.push_to_prometheus(self.opts.environment, snapshot.get("VolumeId"), "", 'timeout', command=MYSQLEBS_CMD_SNAP)
                     break
 
                 time.sleep(5)
@@ -830,7 +828,8 @@ class MysqlEbsSnapshotManager(object):
                             snapshot['VolumeId'], snapshot['SnapshotId'], snapshot['Description']))
                         self.ec2_delete_snapshot(snapshot['SnapshotId'])
                         break
-
+        
+        self.push_to_prometheus(self.opts.environment, "", "", False, command=MYSQLEBS_CMD_PURGE)
         self.logger.info('No more snapshots to prune')
 
 
