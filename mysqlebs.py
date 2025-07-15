@@ -360,18 +360,25 @@ class MysqlEbsSnapshotManager(object):
         try:
             current_time = time.time()
             
-            # Read existing gdb_snapshot_enabled_info value
+            # Read existing values from the file
             enabled_value = 2 # Default value if not found
-            with open(metric_file, 'r') as f:
-                for line in f:
-                    if line.startswith('gdb_snapshot_enabled_info'):
-                        parts = line.strip().split()
-                        if len(parts) >= 2:
-                            try:
-                                enabled_value = int(parts[1])
-                            except ValueError:
-                                enabled_value = 2  # Default to 2 if conversion fails
-                        break
+            existing_completed = []
+            existing_request = []
+            
+            if os.path.exists(metric_file):
+                with open(metric_file, 'r') as f:
+                    for line in f:
+                        if line.startswith('gdb_snapshot_enabled_info'):
+                            parts = line.strip().split()
+                            if len(parts) >= 2:
+                                try:
+                                    enabled_value = int(parts[1])
+                                except ValueError:
+                                    enabled_value = 2  # Default to 2 if conversion fails
+                        elif line.startswith('gdb_snapshot_completed_info'):
+                            existing_completed.append(line.strip())
+                        elif line.startswith('gdb_snapshot_request_created_info'):
+                            existing_request.append(line.strip())
             
             with open(metric_file, 'w') as f:
                 # Always write the enabled metric with the previously read value
@@ -382,8 +389,14 @@ class MysqlEbsSnapshotManager(object):
                 # Rest of the metrics
                 f.write('# HELP gdb_snapshot_request_created_info Time snapshot request was created in ec2\n')
                 f.write('# TYPE gdb_snapshot_request_created_info gauge\n')
+                if existing_request:
+                    for line in existing_request:
+                        f.write(line + '\n')
                 f.write('# HELP gdb_snapshot_completed_info Time snapshot request was completed in ec2\n')
                 f.write('# TYPE gdb_snapshot_completed_info gauge\n')
+                if existing_completed:
+                    for line in existing_completed:
+                        f.write(line + '\n')
                 
                 if command == MYSQLEBS_CMD_SNAP:
                     if state:
