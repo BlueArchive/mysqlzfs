@@ -364,7 +364,9 @@ class MysqlEbsSnapshotManager(object):
             enabled_value = 2 # Default value if not found
             existing_completed = []
             existing_request = []
+            existing_purge = []
             
+            # Read all old metrics to determine the enabled value and existing metrics
             if os.path.exists(metric_file):
                 with open(metric_file, 'r') as f:
                     for line in f:
@@ -379,6 +381,8 @@ class MysqlEbsSnapshotManager(object):
                             existing_completed.append(line.strip())
                         elif line.startswith('gdb_snapshot_request_created_info'):
                             existing_request.append(line.strip())
+                        elif line.startswith('gdb_snapshot_purge_info'):
+                            existing_purge.append(line.strip())
             
             with open(metric_file, 'w') as f:
                 # Always write the enabled metric with the previously read value
@@ -389,31 +393,43 @@ class MysqlEbsSnapshotManager(object):
                 # Rest of the metrics
                 f.write('# HELP gdb_snapshot_request_created_info Time snapshot request was created in ec2\n')
                 f.write('# TYPE gdb_snapshot_request_created_info gauge\n')
-                if existing_request:
-                    for line in existing_request:
-                        f.write(line + '\n')
                 f.write('# HELP gdb_snapshot_completed_info Time snapshot request was completed in ec2\n')
                 f.write('# TYPE gdb_snapshot_completed_info gauge\n')
-                if existing_completed:
-                    for line in existing_completed:
-                        f.write(line + '\n')
                 
                 if command == MYSQLEBS_CMD_SNAP:
                     if state:
                         # Create completed metric
                         metric_name = 'gdb_snapshot_completed_info'
                         labels = f'status="{state}",environment="{environment}",volume="{volumeId}",snapshot="{snapShotId}"'
+                        if existing_request:
+                            for line in existing_request:
+                                f.write(line + '\n')
                         f.write(f'{metric_name}{{{labels}}} {current_time}\n')
+                        if existing_purge:
+                            for line in existing_purge:
+                                f.write(line + '\n')
                     else:
                         # Create request metric
                         metric_name = 'gdb_snapshot_request_created_info'
                         labels = f'environment="{environment}",volume="{volumeId}"'
                         f.write(f'{metric_name}{{{labels}}} {current_time}\n')
+                        if existing_completed:
+                            for line in existing_completed:
+                                f.write(line + '\n')
+                        if existing_purge:
+                            for line in existing_purge:
+                                f.write(line + '\n')
 
                 # Purge metrics
                 f.write('# HELP gdb_snapshot_purge_info Time snapshot request was completed in ec2\n')
                 f.write('# TYPE gdb_snapshot_purge_info gauge\n')
                 if command == MYSQLEBS_CMD_PURGE:
+                    if existing_request:
+                        for line in existing_request:
+                            f.write(line + '\n')
+                    if existing_completed:
+                        for line in existing_completed:
+                            f.write(line + '\n')
                     f.write(f'gdb_snapshot_purge_info{{environment="{environment}"}} {current_time}\n')
 
         except Exception as e:
