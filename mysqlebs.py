@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from glob import glob
 from optparse import OptionParser
 from subprocess import Popen, PIPE, check_call
+from prometheus_client import Gauge, CollectorRegistry, write_to_textfile
 
 MYSQLEBS_VERSION = 0.3
 MYSQLEBS_CMD_SNAP = 'snapshot'
@@ -346,92 +347,63 @@ class MysqlEbsSnapshotManager(object):
         self.frozen_mounts = dict()
         self.volumes = self.ec2_list_ebs_volumes(self.instance_id)
 
+        # Initialize Prometheus metrics
+        self.registry = CollectorRegistry()
+        
+        # Define metrics
+        self.snapshot_request = Gauge('gdb_snapshot_request_created_info',
+                                     'Time snapshot request was created in ec2',
+                                     ['environment', 'volume'],
+                                     registry=self.registry)
+        
+        self.snapshot_completed = Gauge('gdb_snapshot_completed_info',
+                                       'Time snapshot request was completed in ec2',
+                                       ['status', 'environment', 'volume', 'snapshot'],
+                                       registry=self.registry)
+        
+        self.snapshot_purge = Gauge('gdb_snapshot_purge_info',
+                                   'Time snapshot purge was executed',
+                                   ['environment'],
+                                   registry=self.registry)
+
     def push_to_prometheus(self, environment, volumeId, snapShotId="", state=False, command=""):
-        """ Write metrics to a textfile collector. """
-
-        # Write to textfile collector
+        """ Write metrics using prometheus_client library. """
+        
         metric_file = '/textfile_collector/mysql_snapshot.prom'
-
+        
         # Check if Prometheus reporting should be skipped
         if self.opts.skip_prometheus:
             self.logger.info('Skipping Prometheus reporting as per the --skip-prometheus flag.')
-            return  # Exit the function early if skip-prometheus is set
-
+            return
+        
         try:
             current_time = time.time()
             
-            # Read existing values from the file
-            enabled_value = 2 # Default value if not found
-            existing_completed = []
-            existing_request = []
-            existing_purge = []
+            if command == MYSQLEBS_CMD_SNAP:
+                if state:
+                    # Set completed metric
+                    self.snapshot_completed.labels(
+                        status=state,
+                        environment=environment,
+                        volume=volumeId,
+                        snapshot=snapShotId
+                    ).set(current_time)
+                else:
+                    # Set request metric
+                    self.snapshot_request.labels(
+                        environment=environment,
+                        volume=volumeId
+                    ).set(current_time)
             
-            # Read all old metrics to determine the enabled value and existing metrics
-            if os.path.exists(metric_file):
-                with open(metric_file, 'r') as f:
-                    for line in f:
-                        if line.startswith('gdb_snapshot_enabled_info'):
-                            parts = line.strip().split()
-                            if len(parts) >= 2:
-                                try:
-                                    enabled_value = int(parts[1])
-                                except ValueError:
-                                    enabled_value = 2  # Default to 2 if conversion fails
-                        elif line.startswith('gdb_snapshot_completed_info'):
-                            existing_completed.append(line.strip())
-                        elif line.startswith('gdb_snapshot_request_created_info'):
-                            existing_request.append(line.strip())
-                        elif line.startswith('gdb_snapshot_purge_info'):
-                            existing_purge.append(line.strip())
+            elif command == MYSQLEBS_CMD_PURGE:
+                # Set purge metric
+                self.snapshot_purge.labels(
+                    environment=environment
+                ).set(current_time)
             
-            with open(metric_file, 'w') as f:
-                # Always write the enabled metric with the previously read value
-                f.write('# HELP gdb_snapshot_enabled_info Indicates if snapshotting is enabled on this instance\n')
-                f.write('# TYPE gdb_snapshot_enabled_info gauge\n')
-                f.write(f'gdb_snapshot_enabled_info {enabled_value}\n')
-                
-                # Rest of the metrics
-                f.write('# HELP gdb_snapshot_request_created_info Time snapshot request was created in ec2\n')
-                f.write('# TYPE gdb_snapshot_request_created_info gauge\n')
-                f.write('# HELP gdb_snapshot_completed_info Time snapshot request was completed in ec2\n')
-                f.write('# TYPE gdb_snapshot_completed_info gauge\n')
-                
-                if command == MYSQLEBS_CMD_SNAP:
-                    if state:
-                        # Create completed metric
-                        metric_name = 'gdb_snapshot_completed_info'
-                        labels = f'status="{state}",environment="{environment}",volume="{volumeId}",snapshot="{snapShotId}"'
-                        if existing_request:
-                            for line in existing_request:
-                                f.write(line + '\n')
-                        f.write(f'{metric_name}{{{labels}}} {current_time}\n')
-                        if existing_purge:
-                            for line in existing_purge:
-                                f.write(line + '\n')
-                    else:
-                        # Create request metric
-                        metric_name = 'gdb_snapshot_request_created_info'
-                        labels = f'environment="{environment}",volume="{volumeId}"'
-                        f.write(f'{metric_name}{{{labels}}} {current_time}\n')
-                        if existing_completed:
-                            for line in existing_completed:
-                                f.write(line + '\n')
-                        if existing_purge:
-                            for line in existing_purge:
-                                f.write(line + '\n')
-
-                # Purge metrics
-                f.write('# HELP gdb_snapshot_purge_info Time snapshot request was completed in ec2\n')
-                f.write('# TYPE gdb_snapshot_purge_info gauge\n')
-                if command == MYSQLEBS_CMD_PURGE:
-                    if existing_request:
-                        for line in existing_request:
-                            f.write(line + '\n')
-                    if existing_completed:
-                        for line in existing_completed:
-                            f.write(line + '\n')
-                    f.write(f'gdb_snapshot_purge_info{{environment="{environment}"}} {current_time}\n')
-
+            # Write all metrics to the text file
+            write_to_textfile(metric_file, self.registry)
+            
         except Exception as e:
             self.logger.debug('Unable to write to prometheus textfile collector...')
             self.logger.error(str(e))
