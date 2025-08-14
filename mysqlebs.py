@@ -376,7 +376,7 @@ class MysqlEbsSnapshotManager(object):
                         elif line.startswith('gdb_snapshot_purge_info'):
                             existing_purge.append(line.strip())
             
-            with open(metric_file, 'w') as f:                
+            with open(metric_file, 'w') as f:
                 # Rest of the metrics
                 f.write('# HELP gdb_snapshot_request_created_info Time snapshot request was created in ec2\n')
                 f.write('# TYPE gdb_snapshot_request_created_info gauge\n')
@@ -387,7 +387,7 @@ class MysqlEbsSnapshotManager(object):
                     if state:
                         # Create completed metric
                         metric_name = 'gdb_snapshot_completed_info'
-                        labels = f'status="{state}",environment="{environment}",volume="{volumeId}"'
+                        labels = f'status="{state}",environment="{environment}",volume="{volumeId}",snapshot="{snapShotId}"'
                         if existing_request:
                             for line in existing_request:
                                 f.write(line + '\n')
